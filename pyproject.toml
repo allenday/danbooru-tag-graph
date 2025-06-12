@@ -1,0 +1,150 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "danbooru-tag-graph"
+dynamic = ["version"]
+description = "Represent Danbooru folksonomy as a directed graph"
+readme = "README.md"
+license = "MIT"
+authors = [
+    {name = "Allen Day", email = "allenday@users.github.com"}
+]
+maintainers = [
+    {name = "Allen Day", email = "allenday@users.github.com"}
+]
+keywords = ["danbooru", "tags", "image", "tagging", "api", "booru"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.6",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Multimedia :: Graphics",
+]
+requires-python = ">=3.6"
+dependencies = [
+    "networkx>=2.5"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "pytest-cov>=2.10.0",
+    "black>=21.0.0",
+    "flake8>=3.8.0",
+    "mypy>=0.800",
+    "build>=0.7.0",
+    "twine>=3.0.0",
+]
+test = [
+    "pytest>=6.0",
+    "pytest-cov>=2.10.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/allenday/danbooru-tag-graph"
+Documentation = "https://github.com/allenday/danbooru-tag-graph#readme"
+Repository = "https://github.com/allenday/danbooru-tag-graph.git"
+"Bug Tracker" = "https://github.com/allenday/danbooru-tag-graph/issues"
+Changelog = "https://github.com/allenday/danbooru-tag-graph/releases"
+
+[tool.setuptools]
+zip-safe = false
+
+[tool.setuptools.packages.find]
+include = ["danbooru_tag_graph*"]
+
+[tool.setuptools.package-data]
+danbooru_tag_graph = ["py.typed", "*.pyi", "*/*.pyi"]
+
+[tool.setuptools.dynamic]
+version = {attr = "danbooru_tag_graph.__version__"}
+
+# Black code formatting
+[tool.black]
+line-length = 88
+target-version = ['py36', 'py37', 'py38', 'py39', 'py310', 'py311', 'py312']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+# pytest configuration
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+# Coverage configuration
+[tool.coverage.run]
+source = ["danbooru_tag_graph"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+
+# MyPy type checking
+[tool.mypy]
+python_version = "3.6"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "pybooru.*",
+    "dotenv.*",
+    "tqdm.*",
+]
+ignore_missing_imports = true 
