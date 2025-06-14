@@ -5,7 +5,7 @@ A NetworkX-based graph system for efficiently managing Danbooru tag relationship
 including implications, aliases, and deprecated status.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from .danbooru_tag_graph import DanbooruTagGraph
 

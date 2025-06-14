@@ -11,6 +11,7 @@ import os
 import json
 import pickle
 import logging
+import threading
 from typing import Dict, List, Set, Optional, Tuple, Union
 from collections import defaultdict
 import networkx as nx
@@ -24,6 +25,11 @@ class DanbooruTagGraph:
     
     This class provides high-performance caching and querying of tag implications,
     aliases, and deprecated status using a directed graph structure.
+    
+    Thread Safety:
+    - All public methods are thread-safe and can be called concurrently
+    - Internal locking protects graph mutations and iterations
+    - Safe for multi-threaded tag expansion and relationship building
     
     Graph Structure:
     - Nodes: Individual tags with metadata (deprecated status, etc.)
@@ -48,6 +54,7 @@ class DanbooruTagGraph:
         self.graph = nx.MultiDiGraph()  # Allows multiple edge types between nodes
         self.cache_file = cache_file
         self._dirty = False  # Track if graph needs saving
+        self._lock = threading.RLock()  # Reentrant lock for thread safety
         
         # Load existing graph if cache file exists
         if cache_file and os.path.exists(cache_file):
@@ -63,8 +70,9 @@ class DanbooruTagGraph:
             fetched: Whether this tag's relationships have been fetched from API
             **metadata: Additional tag metadata
         """
-        self.graph.add_node(tag, deprecated=is_deprecated, fetched=fetched, **metadata)
-        self._dirty = True
+        with self._lock:
+            self.graph.add_node(tag, deprecated=is_deprecated, fetched=fetched, **metadata)
+            self._dirty = True
     
     def add_implication(self, antecedent: str, consequent: str) -> None:
         """
@@ -74,15 +82,16 @@ class DanbooruTagGraph:
             antecedent: The tag that implies another
             consequent: The tag that is implied
         """
-        # Ensure both nodes exist
-        if not self.graph.has_node(antecedent):
-            self.add_tag(antecedent)
-        if not self.graph.has_node(consequent):
-            self.add_tag(consequent)
-        
-        # Add implication edge
-        self.graph.add_edge(antecedent, consequent, edge_type='implication')
-        self._dirty = True
+        with self._lock:
+            # Ensure both nodes exist
+            if not self.graph.has_node(antecedent):
+                self.graph.add_node(antecedent)
+            if not self.graph.has_node(consequent):
+                self.graph.add_node(consequent)
+            
+            # Add implication edge
+            self.graph.add_edge(antecedent, consequent, edge_type='implication')
+            self._dirty = True
     
     def add_alias(self, tag1: str, tag2: str) -> None:
         """
@@ -92,16 +101,17 @@ class DanbooruTagGraph:
             tag1: First tag in alias relationship
             tag2: Second tag in alias relationship
         """
-        # Ensure both nodes exist
-        if not self.graph.has_node(tag1):
-            self.add_tag(tag1)
-        if not self.graph.has_node(tag2):
-            self.add_tag(tag2)
-        
-        # Add bidirectional alias edges
-        self.graph.add_edge(tag1, tag2, edge_type='alias')
-        self.graph.add_edge(tag2, tag1, edge_type='alias')
-        self._dirty = True
+        with self._lock:
+            # Ensure both nodes exist
+            if not self.graph.has_node(tag1):
+                self.graph.add_node(tag1)
+            if not self.graph.has_node(tag2):
+                self.graph.add_node(tag2)
+            
+            # Add bidirectional alias edges
+            self.graph.add_edge(tag1, tag2, edge_type='alias')
+            self.graph.add_edge(tag2, tag1, edge_type='alias')
+            self._dirty = True
     
     def is_tag_deprecated(self, tag: str) -> bool:
         """
@@ -113,9 +123,10 @@ class DanbooruTagGraph:
         Returns:
             True if deprecated, False otherwise
         """
-        if not self.graph.has_node(tag):
-            return False
-        return self.graph.nodes[tag].get('deprecated', False)
+        with self._lock:
+            if not self.graph.has_node(tag):
+                return False
+            return self.graph.nodes[tag].get('deprecated', False)
     
     def get_implications(self, tag: str, include_deprecated: bool = False) -> List[str]:
         """
@@ -128,20 +139,21 @@ class DanbooruTagGraph:
         Returns:
             List of implied tag names
         """
-        if not self.graph.has_node(tag):
-            return []
-        
-        implications = []
-        for successor in self.graph.successors(tag):
-            # Check if edge is an implication
-            edge_data = self.graph.get_edge_data(tag, successor)
-            for edge in edge_data.values():
-                if edge.get('edge_type') == 'implication':
-                    if include_deprecated or not self.is_tag_deprecated(successor):
-                        implications.append(successor)
-                    break
-        
-        return implications
+        with self._lock:
+            if not self.graph.has_node(tag):
+                return []
+            
+            implications = []
+            for successor in self.graph.successors(tag):
+                # Check if edge is an implication
+                edge_data = self.graph.get_edge_data(tag, successor)
+                for edge in edge_data.values():
+                    if edge.get('edge_type') == 'implication':
+                        if include_deprecated or not self.graph.nodes[successor].get('deprecated', False):
+                            implications.append(successor)
+                        break
+            
+            return implications
     
     def get_aliases(self, tag: str, include_deprecated: bool = False) -> List[str]:
         """
@@ -154,26 +166,27 @@ class DanbooruTagGraph:
         Returns:
             List of alias tag names
         """
-        if not self.graph.has_node(tag):
-            return []
-        
-        aliases = []
-        # Check both successors and predecessors for alias edges
-        neighbors = set(self.graph.successors(tag)) | set(self.graph.predecessors(tag))
-        
-        for neighbor in neighbors:
-            # Check for alias edges in both directions
-            edge_data_out = self.graph.get_edge_data(tag, neighbor, default={})
-            edge_data_in = self.graph.get_edge_data(neighbor, tag, default={})
+        with self._lock:
+            if not self.graph.has_node(tag):
+                return []
             
-            for edge_dict in [edge_data_out, edge_data_in]:
-                for edge in edge_dict.values():
-                    if edge.get('edge_type') == 'alias':
-                        if include_deprecated or not self.is_tag_deprecated(neighbor):
-                            aliases.append(neighbor)
-                        break
-        
-        return list(set(aliases))  # Remove duplicates
+            aliases = []
+            # Check both successors and predecessors for alias edges
+            neighbors = set(self.graph.successors(tag)) | set(self.graph.predecessors(tag))
+            
+            for neighbor in neighbors:
+                # Check for alias edges in both directions
+                edge_data_out = self.graph.get_edge_data(tag, neighbor, default={})
+                edge_data_in = self.graph.get_edge_data(neighbor, tag, default={})
+                
+                for edge_dict in [edge_data_out, edge_data_in]:
+                    for edge in edge_dict.values():
+                        if edge.get('edge_type') == 'alias':
+                            if include_deprecated or not self.graph.nodes[neighbor].get('deprecated', False):
+                                aliases.append(neighbor)
+                            break
+            
+            return list(set(aliases))  # Remove duplicates
     
     def get_transitive_implications(self, tag: str, include_deprecated: bool = False) -> Set[str]:
         """
@@ -186,22 +199,25 @@ class DanbooruTagGraph:
         Returns:
             Set of all transitively implied tag names
         """
-        if not self.graph.has_node(tag):
+        with self._lock:
+            if not self.graph.has_node(tag):
+                return set()
+            
+            # Create a subgraph with only implication edges
+            impl_graph = nx.DiGraph()
+            for u, v, data in self.graph.edges(data=True):
+                if data.get('edge_type') == 'implication':
+                    u_deprecated = self.graph.nodes[u].get('deprecated', False)
+                    v_deprecated = self.graph.nodes[v].get('deprecated', False)
+                    if include_deprecated or (not u_deprecated and not v_deprecated):
+                        impl_graph.add_edge(u, v)
+            
+            # Find all reachable nodes from the starting tag
+            if impl_graph.has_node(tag):
+                reachable = nx.descendants(impl_graph, tag)
+                return reachable
+            
             return set()
-        
-        # Create a subgraph with only implication edges
-        impl_graph = nx.DiGraph()
-        for u, v, data in self.graph.edges(data=True):
-            if data.get('edge_type') == 'implication':
-                if include_deprecated or (not self.is_tag_deprecated(u) and not self.is_tag_deprecated(v)):
-                    impl_graph.add_edge(u, v)
-        
-        # Find all reachable nodes from the starting tag
-        if impl_graph.has_node(tag):
-            reachable = nx.descendants(impl_graph, tag)
-            return reachable
-        
-        return set()
     
     def get_alias_group(self, tag: str, include_deprecated: bool = False) -> Set[str]:
         """
@@ -214,24 +230,27 @@ class DanbooruTagGraph:
         Returns:
             Set of all tags in the same alias group
         """
-        if not self.graph.has_node(tag):
-            return set()
-        
-        # Create an undirected subgraph with only alias edges
-        alias_graph = nx.Graph()
-        for u, v, data in self.graph.edges(data=True):
-            if data.get('edge_type') == 'alias':
-                if include_deprecated or (not self.is_tag_deprecated(u) and not self.is_tag_deprecated(v)):
-                    alias_graph.add_edge(u, v)
-        
-        # Find connected component containing the tag
-        if alias_graph.has_node(tag):
-            for component in nx.connected_components(alias_graph):
-                if tag in component:
-                    return component
-        
-        return {tag}  # Return singleton set if no aliases
-    
+        with self._lock:
+            if not self.graph.has_node(tag):
+                return set()
+            
+            # Create an undirected subgraph with only alias edges
+            alias_graph = nx.Graph()
+            for u, v, data in self.graph.edges(data=True):
+                if data.get('edge_type') == 'alias':
+                    u_deprecated = self.graph.nodes[u].get('deprecated', False)
+                    v_deprecated = self.graph.nodes[v].get('deprecated', False)
+                    if include_deprecated or (not u_deprecated and not v_deprecated):
+                        alias_graph.add_edge(u, v)
+            
+            # Find connected component containing the tag
+            if alias_graph.has_node(tag):
+                for component in nx.connected_components(alias_graph):
+                    if tag in component:
+                        return component
+            
+            return {tag}  # Return singleton set if no aliases
+
     def expand_tags(self, tags: List[str], include_deprecated: bool = False) -> Tuple[Set[str], Dict[str, int]]:
         """
         Expand a list of tags with their implications and aliases.
@@ -246,57 +265,97 @@ class DanbooruTagGraph:
         Returns:
             Tuple of (expanded_tag_set, frequency_dict)
         """
-        # Filter out deprecated input tags
-        if not include_deprecated:
-            tags = [tag for tag in tags if not self.is_tag_deprecated(tag)]
-        
-        if not tags:
-            return set(), {}
-        
-        # Start with original tags
-        expanded_tags = set(tags)
-        frequencies = defaultdict(int)
-        
-        # Initialize frequencies for original tags
-        for tag in tags:
-            frequencies[tag] = 1
-        
-        # Process implications transitively
-        processed_implications = set()
-        implication_queue = list(tags)
-        
-        while implication_queue:
-            current_tag = implication_queue.pop(0)
-            if current_tag in processed_implications:
-                continue
-            processed_implications.add(current_tag)
+        with self._lock:
+            # Filter out deprecated input tags
+            if not include_deprecated:
+                tags = [tag for tag in tags if not self.graph.has_node(tag) or not self.graph.nodes[tag].get('deprecated', False)]
             
-            # Get direct implications
-            implications = self.get_implications(current_tag, include_deprecated)
-            for implied_tag in implications:
-                if implied_tag not in expanded_tags:
-                    expanded_tags.add(implied_tag)
-                    implication_queue.append(implied_tag)
+            if not tags:
+                return set(), {}
+            
+            # Start with original tags
+            expanded_tags = set(tags)
+            frequencies = defaultdict(int)
+            
+            # Initialize frequencies for original tags
+            for tag in tags:
+                frequencies[tag] = 1
+            
+            # Process implications transitively
+            processed_implications = set()
+            implication_queue = list(tags)
+            
+            while implication_queue:
+                current_tag = implication_queue.pop(0)
+                if current_tag in processed_implications:
+                    continue
+                processed_implications.add(current_tag)
                 
-                # Add frequency from the implying tag
-                frequencies[implied_tag] += frequencies[current_tag]
+                # Get direct implications (thread-safe since we hold the lock)
+                implications = self._get_implications_unlocked(current_tag, include_deprecated)
+                for implied_tag in implications:
+                    if implied_tag not in expanded_tags:
+                        expanded_tags.add(implied_tag)
+                        implication_queue.append(implied_tag)
+                    
+                    # Add frequency from the implying tag
+                    frequencies[implied_tag] += frequencies[current_tag]
+            
+            # Process aliases (they share frequency within each group)
+            alias_groups = {}
+            for tag in list(expanded_tags):
+                if tag not in alias_groups:
+                    group = self._get_alias_group_unlocked(tag, include_deprecated)
+                    total_freq = sum(frequencies[t] for t in group if t in frequencies)
+                    
+                    # Add all aliases to expanded set
+                    expanded_tags.update(group)
+                    
+                    # Set equal frequency for all aliases in the group
+                    for alias_tag in group:
+                        frequencies[alias_tag] = total_freq
+                        alias_groups[alias_tag] = group
+            
+            return expanded_tags, dict(frequencies)
+
+    def _get_implications_unlocked(self, tag: str, include_deprecated: bool = False) -> List[str]:
+        """Internal method to get implications without acquiring lock."""
+        if not self.graph.has_node(tag):
+            return []
         
-        # Process aliases (they share frequency within each group)
-        alias_groups = {}
-        for tag in list(expanded_tags):
-            if tag not in alias_groups:
-                group = self.get_alias_group(tag, include_deprecated)
-                total_freq = sum(frequencies[t] for t in group if t in frequencies)
-                
-                # Add all aliases to expanded set
-                expanded_tags.update(group)
-                
-                # Set equal frequency for all aliases in the group
-                for alias_tag in group:
-                    frequencies[alias_tag] = total_freq
-                    alias_groups[alias_tag] = group
+        implications = []
+        for successor in self.graph.successors(tag):
+            # Check if edge is an implication
+            edge_data = self.graph.get_edge_data(tag, successor)
+            for edge in edge_data.values():
+                if edge.get('edge_type') == 'implication':
+                    if include_deprecated or not self.graph.nodes[successor].get('deprecated', False):
+                        implications.append(successor)
+                    break
         
-        return expanded_tags, dict(frequencies)
+        return implications
+
+    def _get_alias_group_unlocked(self, tag: str, include_deprecated: bool = False) -> Set[str]:
+        """Internal method to get alias group without acquiring lock."""
+        if not self.graph.has_node(tag):
+            return set()
+        
+        # Create an undirected subgraph with only alias edges
+        alias_graph = nx.Graph()
+        for u, v, data in self.graph.edges(data=True):
+            if data.get('edge_type') == 'alias':
+                u_deprecated = self.graph.nodes[u].get('deprecated', False)
+                v_deprecated = self.graph.nodes[v].get('deprecated', False)
+                if include_deprecated or (not u_deprecated and not v_deprecated):
+                    alias_graph.add_edge(u, v)
+        
+        # Find connected component containing the tag
+        if alias_graph.has_node(tag):
+            for component in nx.connected_components(alias_graph):
+                if tag in component:
+                    return component
+        
+        return {tag}  # Return singleton set if no aliases
     
     def load_graph(self, cache_file: str) -> None:
         """
@@ -305,14 +364,15 @@ class DanbooruTagGraph:
         Args:
             cache_file: Path to the cache file
         """
-        try:
-            with open(cache_file, 'rb') as f:
-                self.graph = pickle.load(f)
-            logger.info(f"Loaded tag graph with {self.graph.number_of_nodes()} nodes and {self.graph.number_of_edges()} edges")
-            self._dirty = False
-        except Exception as e:
-            logger.error(f"Failed to load graph cache: {e}")
-            self.graph = nx.MultiDiGraph()
+        with self._lock:
+            try:
+                with open(cache_file, 'rb') as f:
+                    self.graph = pickle.load(f)
+                logger.info(f"Loaded tag graph with {self.graph.number_of_nodes()} nodes and {self.graph.number_of_edges()} edges")
+                self._dirty = False
+            except Exception as e:
+                logger.error(f"Failed to load graph cache: {e}")
+                self.graph = nx.MultiDiGraph()
     
     def save_graph(self, cache_file: Optional[str] = None) -> None:
         """
@@ -325,22 +385,24 @@ class DanbooruTagGraph:
         if not cache_file:
             raise ValueError("No cache file specified")
         
-        try:
-            # Ensure directory exists
-            os.makedirs(os.path.dirname(cache_file), exist_ok=True)
-            
-            with open(cache_file, 'wb') as f:
-                pickle.dump(self.graph, f, protocol=pickle.HIGHEST_PROTOCOL)
-            logger.info(f"Saved tag graph with {self.graph.number_of_nodes()} nodes and {self.graph.number_of_edges()} edges")
-            self._dirty = False
-        except Exception as e:
-            logger.error(f"Failed to save graph cache: {e}")
+        with self._lock:
+            try:
+                # Ensure directory exists
+                os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+                
+                with open(cache_file, 'wb') as f:
+                    pickle.dump(self.graph, f, protocol=pickle.HIGHEST_PROTOCOL)
+                logger.info(f"Saved tag graph with {self.graph.number_of_nodes()} nodes and {self.graph.number_of_edges()} edges")
+                self._dirty = False
+            except Exception as e:
+                logger.error(f"Failed to save graph cache: {e}")
     
     def auto_save(self) -> None:
         """Save graph if it has been modified."""
-        if self._dirty and self.cache_file:
-            self.save_graph()
-    
+        with self._lock:
+            if self._dirty and self.cache_file:
+                self.save_graph()
+
     def import_from_json_cache(self, cache_dir: str) -> None:
         """
         Import data from the old JSON file-based cache format.
@@ -351,78 +413,85 @@ class DanbooruTagGraph:
         Args:
             cache_dir: Directory containing the old JSON cache files
         """
-        if not os.path.exists(cache_dir):
-            logger.warning(f"Cache directory not found: {cache_dir}")
-            return
-        
-        imported_tags = set()
-        
-        # Import implications
-        for filename in os.listdir(cache_dir):
-            if filename.startswith('implications_') and filename.endswith('.json'):
-                tag = filename[len('implications_'):-len('.json')]
-                tag = self._decode_cache_filename(tag)
-                
-                try:
-                    with open(os.path.join(cache_dir, filename), 'r') as f:
-                        implications = json.load(f)
+        with self._lock:
+            if not os.path.exists(cache_dir):
+                logger.warning(f"Cache directory not found: {cache_dir}")
+                return
+            
+            imported_tags = set()
+            
+            # Import implications
+            for filename in os.listdir(cache_dir):
+                if filename.startswith('implications_') and filename.endswith('.json'):
+                    tag = filename[len('implications_'):-len('.json')]
+                    tag = self._decode_cache_filename(tag)
                     
-                    # Add tag if not exists
-                    if not self.graph.has_node(tag):
-                        self.add_tag(tag)
+                    try:
+                        with open(os.path.join(cache_dir, filename), 'r') as f:
+                            implications = json.load(f)
+                        
+                        # Add tag if not exists
+                        if not self.graph.has_node(tag):
+                            self.graph.add_node(tag)
+                        
+                        # Add implications
+                        for implied_tag in implications:
+                            if not self.graph.has_node(implied_tag):
+                                self.graph.add_node(implied_tag)
+                            self.graph.add_edge(tag, implied_tag, edge_type='implication')
+                        
+                        imported_tags.add(tag)
+                    except Exception as e:
+                        logger.error(f"Failed to import implications for {tag}: {e}")
+            
+            # Import aliases
+            for filename in os.listdir(cache_dir):
+                if filename.startswith('aliases_') and filename.endswith('.json'):
+                    tag = filename[len('aliases_'):-len('.json')]
+                    tag = self._decode_cache_filename(tag)
                     
-                    # Add implications
-                    for implied_tag in implications:
-                        self.add_implication(tag, implied_tag)
+                    try:
+                        with open(os.path.join(cache_dir, filename), 'r') as f:
+                            aliases = json.load(f)
+                        
+                        # Add tag if not exists
+                        if not self.graph.has_node(tag):
+                            self.graph.add_node(tag)
+                        
+                        # Add aliases
+                        for alias_tag in aliases:
+                            if not self.graph.has_node(alias_tag):
+                                self.graph.add_node(alias_tag)
+                            # Add bidirectional alias edges
+                            self.graph.add_edge(tag, alias_tag, edge_type='alias')
+                            self.graph.add_edge(alias_tag, tag, edge_type='alias')
+                        
+                        imported_tags.add(tag)
+                    except Exception as e:
+                        logger.error(f"Failed to import aliases for {tag}: {e}")
+            
+            # Import deprecated status
+            for filename in os.listdir(cache_dir):
+                if filename.startswith('deprecated_') and filename.endswith('.json'):
+                    tag = filename[len('deprecated_'):-len('.json')]
+                    tag = self._decode_cache_filename(tag)
                     
-                    imported_tags.add(tag)
-                except Exception as e:
-                    logger.error(f"Failed to import implications for {tag}: {e}")
-        
-        # Import aliases
-        for filename in os.listdir(cache_dir):
-            if filename.startswith('aliases_') and filename.endswith('.json'):
-                tag = filename[len('aliases_'):-len('.json')]
-                tag = self._decode_cache_filename(tag)
-                
-                try:
-                    with open(os.path.join(cache_dir, filename), 'r') as f:
-                        aliases = json.load(f)
-                    
-                    # Add tag if not exists
-                    if not self.graph.has_node(tag):
-                        self.add_tag(tag)
-                    
-                    # Add aliases
-                    for alias_tag in aliases:
-                        self.add_alias(tag, alias_tag)
-                    
-                    imported_tags.add(tag)
-                except Exception as e:
-                    logger.error(f"Failed to import aliases for {tag}: {e}")
-        
-        # Import deprecated status
-        for filename in os.listdir(cache_dir):
-            if filename.startswith('deprecated_') and filename.endswith('.json'):
-                tag = filename[len('deprecated_'):-len('.json')]
-                tag = self._decode_cache_filename(tag)
-                
-                try:
-                    with open(os.path.join(cache_dir, filename), 'r') as f:
-                        is_deprecated = json.load(f)
-                    
-                    # Update tag with deprecated status
-                    if self.graph.has_node(tag):
-                        self.graph.nodes[tag]['deprecated'] = is_deprecated
-                    else:
-                        self.add_tag(tag, is_deprecated=is_deprecated)
-                    
-                    imported_tags.add(tag)
-                except Exception as e:
-                    logger.error(f"Failed to import deprecated status for {tag}: {e}")
-        
-        logger.info(f"Imported {len(imported_tags)} tags from JSON cache")
-        self._dirty = True
+                    try:
+                        with open(os.path.join(cache_dir, filename), 'r') as f:
+                            is_deprecated = json.load(f)
+                        
+                        # Update tag with deprecated status
+                        if self.graph.has_node(tag):
+                            self.graph.nodes[tag]['deprecated'] = is_deprecated
+                        else:
+                            self.graph.add_node(tag, deprecated=is_deprecated)
+                        
+                        imported_tags.add(tag)
+                    except Exception as e:
+                        logger.error(f"Failed to import deprecated status for {tag}: {e}")
+            
+            logger.info(f"Imported {len(imported_tags)} tags from JSON cache")
+            self._dirty = True
     
     def _decode_cache_filename(self, encoded_tag: str) -> str:
         """Decode URL-encoded tag name from cache filename."""
@@ -436,48 +505,52 @@ class DanbooruTagGraph:
         Returns:
             Dictionary with graph statistics
         """
-        total_nodes = self.graph.number_of_nodes()
-        total_edges = self.graph.number_of_edges()
-        
-        # Count edge types
-        implication_edges = 0
-        alias_edges = 0
-        deprecated_nodes = 0
-        
-        for u, v, data in self.graph.edges(data=True):
-            if data.get('edge_type') == 'implication':
-                implication_edges += 1
-            elif data.get('edge_type') == 'alias':
-                alias_edges += 1
-        
-        for node, data in self.graph.nodes(data=True):
-            if data.get('deprecated', False):
-                deprecated_nodes += 1
-        
-        return {
-            'total_nodes': total_nodes,
-            'total_edges': total_edges,
-            'implication_edges': implication_edges,
-            'alias_edges': alias_edges,
-            'deprecated_nodes': deprecated_nodes
-        }
+        with self._lock:
+            total_nodes = self.graph.number_of_nodes()
+            total_edges = self.graph.number_of_edges()
+            
+            # Count edge types
+            implication_edges = 0
+            alias_edges = 0
+            deprecated_nodes = 0
+            
+            for u, v, data in self.graph.edges(data=True):
+                if data.get('edge_type') == 'implication':
+                    implication_edges += 1
+                elif data.get('edge_type') == 'alias':
+                    alias_edges += 1
+            
+            for node, data in self.graph.nodes(data=True):
+                if data.get('deprecated', False):
+                    deprecated_nodes += 1
+            
+            return {
+                'total_nodes': total_nodes,
+                'total_edges': total_edges,
+                'implication_edges': implication_edges,
+                'alias_edges': alias_edges,
+                'deprecated_nodes': deprecated_nodes
+            }
     
     def mark_tag_fetched(self, tag: str) -> None:
         """Mark a tag as having its relationships fetched from the API."""
-        if self.graph.has_node(tag):
-            self.graph.nodes[tag]['fetched'] = True
-            self._dirty = True
+        with self._lock:
+            if self.graph.has_node(tag):
+                self.graph.nodes[tag]['fetched'] = True
+                self._dirty = True
     
     def is_tag_fetched(self, tag: str) -> bool:
         """Check if a tag's relationships have been fetched from the API."""
-        if not self.graph.has_node(tag):
-            return False
-        return self.graph.nodes[tag].get('fetched', False)
+        with self._lock:
+            if not self.graph.has_node(tag):
+                return False
+            return self.graph.nodes[tag].get('fetched', False)
     
     def get_unfetched_tags(self, tags: List[str]) -> List[str]:
         """Get list of tags that need their relationships fetched."""
-        unfetched = []
-        for tag in tags:
-            if not self.graph.has_node(tag) or not self.is_tag_fetched(tag):
-                unfetched.append(tag)
-        return unfetched 
+        with self._lock:
+            unfetched = []
+            for tag in tags:
+                if not self.graph.has_node(tag) or not self.graph.nodes[tag].get('fetched', False):
+                    unfetched.append(tag)
+            return unfetched 

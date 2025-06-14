@@ -7,7 +7,7 @@ name = "danbooru-tag-graph"
 dynamic = ["version"]
 description = "Represent Danbooru folksonomy as a directed graph"
 readme = "README.md"
-license = "MIT"
+license = {text = "MIT"}
 authors = [
     {name = "Allen Day", email = "allenday@users.github.com"}
 ]
