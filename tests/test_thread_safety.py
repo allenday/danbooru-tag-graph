@@ -79,9 +79,9 @@ class TestThreadSafety(unittest.TestCase):
         def add_aliases(thread_id):
             """Add aliases in a thread."""
             for i in range(aliases_per_thread):
-                tag1 = f"t{thread_id}_alias1_{i}"
-                tag2 = f"t{thread_id}_alias2_{i}"
-                self.graph.add_alias(tag1, tag2)
+                antecedent = f"t{thread_id}_old_{i}"
+                consequent = f"t{thread_id}_new_{i}"
+                self.graph.add_alias(antecedent, consequent)
         
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures = [
@@ -93,8 +93,8 @@ class TestThreadSafety(unittest.TestCase):
                 future.result()
         
         stats = self.graph.stats()
-        # Each alias creates 2 bidirectional edges
-        expected_alias_edges = num_threads * aliases_per_thread * 2
+        # Each alias creates 1 directional edge (not 2 bidirectional)
+        expected_alias_edges = num_threads * aliases_per_thread
         self.assertEqual(stats['alias_edges'], expected_alias_edges)
 
     def test_concurrent_expansion(self):
@@ -104,7 +104,7 @@ class TestThreadSafety(unittest.TestCase):
         self.graph.add_tag("animal", fetched=True)
         self.graph.add_tag("feline", fetched=True)
         self.graph.add_implication("cat", "animal")
-        self.graph.add_alias("cat", "feline")
+        self.graph.add_alias("feline", "cat")  # feline -> cat (directional)
         
         expansion_results = []
         modification_complete = threading.Event()
@@ -113,8 +113,11 @@ class TestThreadSafety(unittest.TestCase):
             """Continuously expand tags."""
             while not modification_complete.is_set():
                 try:
-                    expanded, frequencies = self.graph.expand_tags(["cat"])
-                    expansion_results.append((expanded, frequencies))
+                    # Test expansion with both canonical and antecedent tags
+                    expanded_cat, frequencies_cat = self.graph.expand_tags(["cat"])
+                    expanded_feline, frequencies_feline = self.graph.expand_tags(["feline"])
+                    expansion_results.append((expanded_cat, frequencies_cat))
+                    expansion_results.append((expanded_feline, frequencies_feline))
                 except Exception as e:
                     self.fail(f"Tag expansion failed: {e}")
                 time.sleep(0.001)  # Small delay to allow other threads
@@ -143,7 +146,7 @@ class TestThreadSafety(unittest.TestCase):
         
         # Final expansion should include all new implications
         final_expanded, final_frequencies = self.graph.expand_tags(["cat"])
-        self.assertGreaterEqual(len(final_expanded), 103)  # cat + animal + feline + 100 new
+        self.assertGreaterEqual(len(final_expanded), 102)  # cat + animal + 100 new
 
     def test_concurrent_stats(self):
         """Test getting stats while graph is being modified."""

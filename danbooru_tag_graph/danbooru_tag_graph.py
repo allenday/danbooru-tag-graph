@@ -93,24 +93,27 @@ class DanbooruTagGraph:
             self.graph.add_edge(antecedent, consequent, edge_type='implication')
             self._dirty = True
     
-    def add_alias(self, tag1: str, tag2: str) -> None:
+    def add_alias(self, antecedent: str, consequent: str) -> None:
         """
-        Add an alias relationship between two tags (bidirectional).
+        Add a directional alias relationship: antecedent -> consequent.
+        
+        In Danbooru's system:
+        - antecedent: The deprecated/old tag that redirects to another
+        - consequent: The canonical/preferred tag that should be used
         
         Args:
-            tag1: First tag in alias relationship
-            tag2: Second tag in alias relationship
+            antecedent: The tag that is aliased (deprecated/old)
+            consequent: The tag that is the alias target (canonical/preferred)
         """
         with self._lock:
             # Ensure both nodes exist
-            if not self.graph.has_node(tag1):
-                self.graph.add_node(tag1)
-            if not self.graph.has_node(tag2):
-                self.graph.add_node(tag2)
+            if not self.graph.has_node(antecedent):
+                self.graph.add_node(antecedent)
+            if not self.graph.has_node(consequent):
+                self.graph.add_node(consequent)
             
-            # Add bidirectional alias edges
-            self.graph.add_edge(tag1, tag2, edge_type='alias')
-            self.graph.add_edge(tag2, tag1, edge_type='alias')
+            # Add single directional alias edge: antecedent -> consequent
+            self.graph.add_edge(antecedent, consequent, edge_type='alias')
             self._dirty = True
     
     def is_tag_deprecated(self, tag: str) -> bool:
@@ -157,36 +160,89 @@ class DanbooruTagGraph:
     
     def get_aliases(self, tag: str, include_deprecated: bool = False) -> List[str]:
         """
-        Get all aliases for this tag.
+        Get all tags that this tag is aliased TO (outgoing aliases: antecedent -> consequent).
+        
+        This returns the canonical/preferred tags that this tag redirects to.
         
         Args:
             tag: The tag to get aliases for
-            include_deprecated: Whether to include deprecated aliases
+            include_deprecated: Whether to include deprecated consequent tags
             
         Returns:
-            List of alias tag names
+            List of consequent tag names (canonical targets)
         """
         with self._lock:
             if not self.graph.has_node(tag):
                 return []
             
             aliases = []
-            # Check both successors and predecessors for alias edges
-            neighbors = set(self.graph.successors(tag)) | set(self.graph.predecessors(tag))
+            # Only check successors (outgoing edges) for alias relationships
+            for successor in self.graph.successors(tag):
+                # Check if edge is an alias (antecedent -> consequent)
+                edge_data = self.graph.get_edge_data(tag, successor)
+                for edge in edge_data.values():
+                    if edge.get('edge_type') == 'alias':
+                        if include_deprecated or not self.graph.nodes[successor].get('deprecated', False):
+                            aliases.append(successor)
+                        break
             
-            for neighbor in neighbors:
-                # Check for alias edges in both directions
-                edge_data_out = self.graph.get_edge_data(tag, neighbor, default={})
-                edge_data_in = self.graph.get_edge_data(neighbor, tag, default={})
-                
-                for edge_dict in [edge_data_out, edge_data_in]:
-                    for edge in edge_dict.values():
-                        if edge.get('edge_type') == 'alias':
-                            if include_deprecated or not self.graph.nodes[neighbor].get('deprecated', False):
-                                aliases.append(neighbor)
-                            break
+            return aliases
+    
+    def get_aliased_from(self, tag: str, include_deprecated: bool = False) -> List[str]:
+        """
+        Get all tags that are aliased TO this tag (incoming aliases: antecedent -> consequent).
+        
+        This returns the deprecated/old tags that redirect to this canonical tag.
+        
+        Args:
+            tag: The tag to get incoming aliases for
+            include_deprecated: Whether to include deprecated antecedent tags
             
-            return list(set(aliases))  # Remove duplicates
+        Returns:
+            List of antecedent tag names (deprecated sources)
+        """
+        with self._lock:
+            if not self.graph.has_node(tag):
+                return []
+            
+            aliased_from = []
+            # Only check predecessors (incoming edges) for alias relationships
+            for predecessor in self.graph.predecessors(tag):
+                # Check if edge is an alias (predecessor -> tag)
+                edge_data = self.graph.get_edge_data(predecessor, tag)
+                for edge in edge_data.values():
+                    if edge.get('edge_type') == 'alias':
+                        if include_deprecated or not self.graph.nodes[predecessor].get('deprecated', False):
+                            aliased_from.append(predecessor)
+                        break
+            
+            return aliased_from
+    
+    def is_canonical(self, tag: str) -> bool:
+        """
+        Check if a tag is canonical (not an antecedent in any alias relationship).
+        
+        A canonical tag is one that doesn't have outgoing alias edges, meaning
+        it's not deprecated/redirected to another tag.
+        
+        Args:
+            tag: The tag to check
+            
+        Returns:
+            True if the tag is canonical (no outgoing aliases), False otherwise
+        """
+        with self._lock:
+            if not self.graph.has_node(tag):
+                return True  # Non-existent tags are considered canonical
+            
+            # Check if tag has any outgoing alias edges
+            for successor in self.graph.successors(tag):
+                edge_data = self.graph.get_edge_data(tag, successor)
+                for edge in edge_data.values():
+                    if edge.get('edge_type') == 'alias':
+                        return False  # Has outgoing alias, so not canonical
+            
+            return True  # No outgoing aliases, so canonical
     
     def get_transitive_implications(self, tag: str, include_deprecated: bool = False) -> Set[str]:
         """
@@ -223,6 +279,8 @@ class DanbooruTagGraph:
         """
         Get all tags in the same alias group (connected component of alias edges).
         
+        This follows the alias chain to find all related tags, both antecedents and consequents.
+        
         Args:
             tag: The tag to get the alias group for
             include_deprecated: Whether to include deprecated tags
@@ -234,7 +292,7 @@ class DanbooruTagGraph:
             if not self.graph.has_node(tag):
                 return set()
             
-            # Create an undirected subgraph with only alias edges
+            # Create an undirected subgraph with only alias edges to find connected components
             alias_graph = nx.Graph()
             for u, v, data in self.graph.edges(data=True):
                 if data.get('edge_type') == 'alias':
@@ -255,8 +313,10 @@ class DanbooruTagGraph:
         """
         Expand a list of tags with their implications and aliases.
         
-        This is the main high-performance method that replaces the slow individual
-        file-based cache lookups.
+        This method now correctly handles directional aliases:
+        - Resolves antecedent tags to their canonical consequents
+        - Includes all tags in alias groups for frequency calculation
+        - Processes implications from canonical forms
         
         Args:
             tags: List of input tags to expand
@@ -273,17 +333,28 @@ class DanbooruTagGraph:
             if not tags:
                 return set(), {}
             
-            # Start with original tags
-            expanded_tags = set(tags)
+            # Step 1: Resolve input tags to their canonical forms via aliases
+            canonical_tags = set()
+            tag_to_canonical = {}  # Track mapping for frequency calculation
+            
+            for tag in tags:
+                # Follow alias chain to find canonical form
+                canonical = self._resolve_to_canonical(tag)
+                canonical_tags.add(canonical)
+                tag_to_canonical[tag] = canonical
+            
+            # Start with canonical tags
+            expanded_tags = set(canonical_tags)
             frequencies = defaultdict(int)
             
-            # Initialize frequencies for original tags
-            for tag in tags:
-                frequencies[tag] = 1
+            # Initialize frequencies for canonical tags
+            for original_tag in tags:
+                canonical = tag_to_canonical[original_tag]
+                frequencies[canonical] += 1
             
-            # Process implications transitively
+            # Step 2: Process implications transitively from canonical tags
             processed_implications = set()
-            implication_queue = list(tags)
+            implication_queue = list(canonical_tags)
             
             while implication_queue:
                 current_tag = implication_queue.pop(0)
@@ -301,22 +372,65 @@ class DanbooruTagGraph:
                     # Add frequency from the implying tag
                     frequencies[implied_tag] += frequencies[current_tag]
             
-            # Process aliases (they share frequency within each group)
-            alias_groups = {}
+            # Step 3: Include all tags in alias groups for comprehensive expansion
+            all_related_tags = set(expanded_tags)
             for tag in list(expanded_tags):
-                if tag not in alias_groups:
-                    group = self._get_alias_group_unlocked(tag, include_deprecated)
-                    total_freq = sum(frequencies[t] for t in group if t in frequencies)
-                    
-                    # Add all aliases to expanded set
-                    expanded_tags.update(group)
-                    
-                    # Set equal frequency for all aliases in the group
-                    for alias_tag in group:
-                        frequencies[alias_tag] = total_freq
-                        alias_groups[alias_tag] = group
+                alias_group = self._get_alias_group_unlocked(tag, include_deprecated)
+                all_related_tags.update(alias_group)
+                
+                # Distribute frequency to all members of alias group
+                base_freq = frequencies.get(tag, 0)
+                for alias_tag in alias_group:
+                    if alias_tag not in frequencies:
+                        frequencies[alias_tag] = base_freq
             
-            return expanded_tags, dict(frequencies)
+            return all_related_tags, dict(frequencies)
+
+    def _resolve_to_canonical(self, tag: str) -> str:
+        """
+        Resolve a tag to its canonical form by following alias chain.
+        
+        This follows outgoing alias edges (antecedent -> consequent) until
+        reaching a tag with no outgoing aliases (canonical form).
+        
+        Args:
+            tag: The tag to resolve
+            
+        Returns:
+            The canonical tag name
+        """
+        visited = set()
+        current = tag
+        
+        while current not in visited:
+            visited.add(current)
+            aliases = self._get_aliases_unlocked(current)
+            
+            if not aliases:
+                # No outgoing aliases, this is canonical
+                return current
+            
+            # Follow the first alias (should typically be only one)
+            current = aliases[0]
+        
+        # If we hit a cycle, return the original tag
+        return tag
+
+    def _get_aliases_unlocked(self, tag: str, include_deprecated: bool = False) -> List[str]:
+        """Internal method to get outgoing aliases without acquiring lock."""
+        if not self.graph.has_node(tag):
+            return []
+        
+        aliases = []
+        for successor in self.graph.successors(tag):
+            edge_data = self.graph.get_edge_data(tag, successor)
+            for edge in edge_data.values():
+                if edge.get('edge_type') == 'alias':
+                    if include_deprecated or not self.graph.nodes[successor].get('deprecated', False):
+                        aliases.append(successor)
+                    break
+        
+        return aliases
 
     def _get_implications_unlocked(self, tag: str, include_deprecated: bool = False) -> List[str]:
         """Internal method to get implications without acquiring lock."""
@@ -458,13 +572,12 @@ class DanbooruTagGraph:
                         if not self.graph.has_node(tag):
                             self.graph.add_node(tag)
                         
-                        # Add aliases
+                        # Add aliases - the file contains consequents for this antecedent
                         for alias_tag in aliases:
                             if not self.graph.has_node(alias_tag):
                                 self.graph.add_node(alias_tag)
-                            # Add bidirectional alias edges
+                            # Add single directional alias edge: antecedent -> consequent
                             self.graph.add_edge(tag, alias_tag, edge_type='alias')
-                            self.graph.add_edge(alias_tag, tag, edge_type='alias')
                         
                         imported_tags.add(tag)
                     except Exception as e:

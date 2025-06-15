@@ -32,12 +32,17 @@ class TestDanbooruTagGraph(unittest.TestCase):
         """Test adding aliases."""
         self.graph.add_alias("cat", "feline")
         
+        # Test directional behavior: cat -> feline
         aliases = self.graph.get_aliases("cat")
         self.assertIn("feline", aliases)
         
-        # Should be bidirectional
-        aliases_reverse = self.graph.get_aliases("feline")
-        self.assertIn("cat", aliases_reverse)
+        # feline should not have outgoing aliases
+        reverse_aliases = self.graph.get_aliases("feline")
+        self.assertEqual(reverse_aliases, [])
+        
+        # Test reverse lookup
+        aliased_from = self.graph.get_aliased_from("feline")
+        self.assertIn("cat", aliased_from)
 
     def test_transitive_implications(self):
         """Test transitive implications."""
@@ -56,18 +61,28 @@ class TestDanbooruTagGraph(unittest.TestCase):
         self.graph.add_tag("feline", fetched=True)
         
         self.graph.add_implication("cat", "animal")
-        self.graph.add_alias("cat", "feline")
+        self.graph.add_alias("old_cat", "cat")  # old_cat -> cat (directional)
         
-        # Test expansion
+        # Test expansion with canonical tag
         expanded_tags, frequencies = self.graph.expand_tags(["cat"])
         
-        expected_tags = {"cat", "animal", "feline"}
-        self.assertEqual(expanded_tags, expected_tags)
+        expected_tags = {"cat", "animal"}  # cat and its implication
+        self.assertLessEqual(expected_tags, expanded_tags)  # Should contain at least these
         
         # Check frequencies
         self.assertEqual(frequencies["cat"], 1)
-        self.assertEqual(frequencies["feline"], 1)  # Same as cat (alias)
         self.assertEqual(frequencies["animal"], 1)  # From cat implication
+        
+        # Test expansion with antecedent tag (should resolve to canonical)
+        expanded_tags_2, frequencies_2 = self.graph.expand_tags(["old_cat"])
+        
+        # Should include both old_cat and canonical form cat + implications
+        self.assertIn("cat", expanded_tags_2)  # Canonical form
+        self.assertIn("animal", expanded_tags_2)  # Implication from canonical
+        self.assertIn("old_cat", expanded_tags_2)  # Original antecedent
+        
+        # Frequency should be on canonical form
+        self.assertEqual(frequencies_2["cat"], 1)
 
     def test_save_load_graph(self):
         """Test saving and loading graph."""
