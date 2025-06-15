@@ -188,15 +188,16 @@ class DanbooruTagGraph:
             
             return aliases
     
-    def get_aliased_from(self, tag: str, include_deprecated: bool = False) -> List[str]:
+    def get_aliased_from(self, tag: str, include_deprecated: bool = True) -> List[str]:
         """
         Get all tags that are aliased TO this tag (incoming aliases: antecedent -> consequent).
         
         This returns the deprecated/old tags that redirect to this canonical tag.
+        Note: Default includes deprecated tags since antecedents are typically deprecated.
         
         Args:
             tag: The tag to get incoming aliases for
-            include_deprecated: Whether to include deprecated antecedent tags
+            include_deprecated: Whether to include deprecated antecedent tags (default: True)
             
         Returns:
             List of antecedent tag names (deprecated sources)
@@ -212,6 +213,7 @@ class DanbooruTagGraph:
                 edge_data = self.graph.get_edge_data(predecessor, tag)
                 for edge in edge_data.values():
                     if edge.get('edge_type') == 'alias':
+                        # Include if we want deprecated tags OR if the predecessor is not deprecated
                         if include_deprecated or not self.graph.nodes[predecessor].get('deprecated', False):
                             aliased_from.append(predecessor)
                         break

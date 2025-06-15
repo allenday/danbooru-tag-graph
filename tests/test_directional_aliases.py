@@ -25,9 +25,25 @@ class TestDirectionalAliases(unittest.TestCase):
         # Add the directional alias: ugly_man -> ugly_bastard
         self.graph.add_alias("ugly_man", "ugly_bastard")
         
-        # Verify incoming aliases
+        # Verify incoming aliases (should work with default include_deprecated=True)
         self.assertEqual(self.graph.get_aliased_from("ugly_bastard"), ["ugly_man"])
         self.assertEqual(self.graph.get_aliased_from("ugly_man"), [])  # No incoming aliases
+
+    def test_get_aliased_from_with_deprecated(self):
+        """Test getting incoming aliases with deprecated antecedents."""
+        # Add tags with explicit deprecated status
+        self.graph.add_tag("ugly_man", is_deprecated=True)
+        self.graph.add_tag("ugly_bastard", is_deprecated=False)
+        self.graph.add_alias("ugly_man", "ugly_bastard")
+        
+        # Should include deprecated antecedent by default
+        self.assertEqual(self.graph.get_aliased_from("ugly_bastard"), ["ugly_man"])
+        
+        # Should still include when explicitly requested
+        self.assertEqual(self.graph.get_aliased_from("ugly_bastard", include_deprecated=True), ["ugly_man"])
+        
+        # Should exclude when explicitly not requested
+        self.assertEqual(self.graph.get_aliased_from("ugly_bastard", include_deprecated=False), [])
 
     def test_is_canonical(self):
         """Test canonical tag detection."""
@@ -173,6 +189,25 @@ class TestDirectionalAliases(unittest.TestCase):
         # Test reverse lookup
         self.assertEqual(self.graph.get_aliased_from("ugly_bastard"), ["ugly_man"])
         self.assertEqual(self.graph.get_aliased_from("ugly_man"), [])
+
+    def test_bug_report_reproduction(self):
+        """Test the exact scenario from the bug report."""
+        # Reproduce the exact bug report scenario
+        graph = DanbooruTagGraph()
+        graph.add_tag("ugly_man", is_deprecated=True, fetched=True)
+        graph.add_tag("ugly_bastard", is_deprecated=False, fetched=True)
+        graph.add_alias("ugly_man", "ugly_bastard")  # ugly_man -> ugly_bastard
+
+        # Test the methods from the bug report
+        self.assertEqual(graph.get_aliases("ugly_man"), ["ugly_bastard"])  # Should work
+        self.assertEqual(graph.get_aliased_from("ugly_bastard"), ["ugly_man"])  # Was broken, now fixed
+
+        # Verify graph structure (from bug report verification)
+        out_edges = list(graph.graph.out_edges("ugly_man", data=True))
+        self.assertEqual(out_edges, [("ugly_man", "ugly_bastard", {"edge_type": "alias"})])
+        
+        in_edges = list(graph.graph.in_edges("ugly_bastard", data=True))
+        self.assertEqual(in_edges, [("ugly_man", "ugly_bastard", {"edge_type": "alias"})])
 
 
 if __name__ == '__main__':
